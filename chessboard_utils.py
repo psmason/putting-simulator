@@ -81,7 +81,7 @@ def get_background_diff(frames, median_channels):
 
 def find_golfball(diffed_frame, background_mass):
   M = cv2.moments(diffed_frame, binaryImage=False)
-  if M["m00"] < 25.0 * background_mass:
+  if M["m00"] < 50.0 * background_mass:
       return None, None
   cX = int(M["m10"] / M["m00"])
   cY = int(M["m01"] / M["m00"])
