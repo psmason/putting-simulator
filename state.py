@@ -62,10 +62,8 @@ class TrackingState(Enum):
     CHESSBOARD_FOUND = 2
     INIT_ROI = 3
     FINDING_OBJECTS = 4
-    FINDING_OBJECTS_V2 = 5
-    TRACKING_OBJECT = 6
-    TRACKING_OBJECT_V2 = 7
-    SHOWING_RESULT = 8
+    TRACKING_OBJECT = 5
+    SHOWING_RESULT = 6
 
 class Tracker:
     def __init__(self, voice_assistant):
@@ -98,8 +96,6 @@ class Tracker:
 
         # Timestamp when searching for objects began.
         self.search_start_time = None
-        #self.tracked_object_buffer = deque(maxlen=500)
-        #self.tracked_timestamp_buffer = deque(maxlen=500)
         self.tracked_frame_buffer = deque(maxlen=500)
 
         self.tracking_start_time = None
@@ -123,8 +119,6 @@ class Tracker:
         self.background_mass = None
         self.camera_params = {}
         self.search_start_time = None
-        #self.tracked_object_buffer.clear()
-        #self.tracked_timestamp_buffer.clear()
         self.tracked_frame_buffer.clear()
         self.tracking_start_time = None
         self.show_result_start_time = None
@@ -173,7 +167,7 @@ class Tracker:
         cleaned_mask = cv2.morphologyEx(cleaned_mask, cv2.MORPH_CLOSE, kernel)
         #cv2.imshow("surface", cleaned_mask)
         
-        line1, line2, inliers = camera_utils.fit_neoprene_mask_ransac_v2(
+        line1, line2, inliers = camera_utils.fit_neoprene_mask_ransac(
             cleaned_mask,
             self.camera_params,
             params.SURFACE_WIDTH_MM,
@@ -184,18 +178,11 @@ class Tracker:
         self.state = TrackingState.INIT_ROI
 
     def init_roi(self, frame, t):
-        corners = []
-        for c in self.surface_roi:
-            cp = camera_utils.map_world_to_camera_coords(np.array(c, np.float32),
-                                                              self.camera_params)
-            x, y = cp
-            corners.append((x, y))
-        image_pts_2d = np.array(corners).reshape(-1, 2).astype(np.int32)
-        x, y, w, h = cv2.boundingRect(image_pts_2d)
-        roi = frame[y:y+h, x:x+w, :]
-        #cv2.imshow("sub-image", roi)
-        
-        self.roi_buffer.append(roi)
+        roi_x, roi_y, roi_w, roi_h = camera_utils.get_roi_rect(self.surface_roi,
+                                                               self.camera_params)
+        roi_subframe = frame[roi_y:roi_y+roi_h, roi_x:roi_x+roi_w, :]
+        #cv2.imshow("sub-image", roi_subframe)
+        self.roi_buffer.append(roi_subframe)
 
         if len(self.roi_buffer) == 10:
             ml, ma, mb = chessboard_utils.get_median_pixels(self.roi_buffer)
@@ -208,60 +195,27 @@ class Tracker:
 
             self.roi_buffer.clear()
             self.search_start_time = t
-            self.state = TrackingState.FINDING_OBJECTS_V2
-        
+            self.state = TrackingState.FINDING_OBJECTS
 
-        hsv_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        median_hsv = np.median(hsv_roi, axis=(0, 1))
-        
-        
-        return
-
-    def find_objects_v2(self, frame, t):
-        corners = []
-        for c in self.surface_roi:
-            cp = camera_utils.map_world_to_camera_coords(np.array(c, np.float32),
-                                                              self.camera_params)
-            x, y = cp
-            corners.append((x, y))
-        image_pts_2d = np.array(corners).reshape(-1, 2).astype(np.int32)
-        x, y, w, h = cv2.boundingRect(image_pts_2d)
-        roi = frame[y:y+h, x:x+w, :]
+    def find_objects(self, frame, t):
+        roi_x, roi_y, roi_w, roi_h = camera_utils.get_roi_rect(self.surface_roi,
+                                                               self.camera_params)
+        roi_subframe = frame[roi_y:roi_y+roi_h, roi_x:roi_x+roi_w, :]
         diffed = chessboard_utils.diff_against_median(
-            roi,
+            roi_subframe,
             self.median_channels
         )
-        max_val = np.max(diffed)
-        if max_val > 1e-6:
-            normalized_diff = (diffed / max_val) * 255.0
-        else:
-            normalized_diff = diffed
-        vis_img = normalized_diff.astype(np.uint8)
+        #max_val = np.max(diffed)
+        #if max_val > 1e-6:
+        #    normalized_diff = (diffed / max_val) * 255.0
+        #else:
+        #    normalized_diff = diffed
+        #vis_img = normalized_diff.astype(np.uint8)
         #cv2.imshow("diffed", vis_img)
         
         cX, cY = chessboard_utils.find_golfball(diffed, self.background_mass)
         if all((cX, cY)):
-            self.tracked_frame_buffer.append((frame.copy(), t, (x+cX, y+cY)))
-        else:
-            self.tracked_frame_buffer.append((frame.copy(), t, (None, None)))
-
-        if is_tracking(self.tracked_frame_buffer):
-            self.state = TrackingState.TRACKING_OBJECT_V2
-            self.tracking_start_time = t
-
-        # Give up. Restart from the beginning state.
-        if t - self.search_start_time >= 20.0:
-            self.reset()
-
-    def find_objects(self, frame, t):
-        diffed = chessboard_utils.diff_against_median(
-            chessboard_utils.get_chessboard_subimage(frame, self.cb),
-            self.median_channels
-        )
-        cX, cY = chessboard_utils.find_golfball(diffed, self.background_mass)
-        if all((cX, cY)):
-            x, y, _, _ = chessboard_utils.get_chessboard_bounding_rect(self.cb)
-            self.tracked_frame_buffer.append((frame.copy(), t, (x+cX, y+cY)))
+            self.tracked_frame_buffer.append((frame.copy(), t, (roi_x+cX, roi_y+cY)))
         else:
             self.tracked_frame_buffer.append((frame.copy(), t, (None, None)))
 
@@ -270,116 +224,27 @@ class Tracker:
             self.tracking_start_time = t
 
         # Give up. Restart from the beginning state.
-        if t - self.search_start_time >= 10.0:
+        if t - self.search_start_time >= 20.0:
             self.reset()
 
     def track_object(self, frame, t):
+        roi_x, roi_y, roi_w, roi_h = camera_utils.get_roi_rect(self.surface_roi,
+                                                               self.camera_params)
+        roi_subframe = frame[roi_y:roi_y+roi_h, roi_x:roi_x+roi_w, :]
         diffed = chessboard_utils.diff_against_median(
-            chessboard_utils.get_chessboard_subimage(frame, self.cb),
+            roi_subframe,
             self.median_channels
         )
-        cX, cY = chessboard_utils.find_golfball(diffed, self.background_mass)
-        if all((cX, cY)):
-            x, y, _, _ = chessboard_utils.get_chessboard_bounding_rect(self.cb)
-            self.tracked_frame_buffer.append((frame.copy(), t, (x+cX, y+cY)))
-        else:
-            self.tracked_frame_buffer.append((frame.copy(), t, (None, None)))
-
-        if is_lost(self.tracked_frame_buffer):
-            if is_noise(self.tracked_frame_buffer):
-                self.state = TrackingState.FINDING_CHESSBOARD
-                self.reset()
-                return
-            
-            self.state = TrackingState.SHOWING_RESULT
-            self.show_result_start_time = t
-
-            pixel_path = get_pixel_path(self.tracked_frame_buffer)
-            estimated_distance = eval_utils.evaluate_distance_v8(self.tracked_frame_buffer,
-                                                                 self.camera_params)
-            self.voice_assistant.speak("Distance eval: {:.2f} feet".format(estimated_distance))
-            estimated_direction, direction_result = eval_utils.evaluate_path(self.cb,
-                                                                             pixel_path,
-                                                                             self.camera_params)
-            if estimated_direction < 1.0:
-                self.voice_assistant.speak("Path eval: {:.2f} degrees".format(estimated_direction))
-            else:
-                self.voice_assistant.speak("Path eval: {}, {:.2f} degrees".format(direction_result,
-                                                                      estimated_direction))
-            
-            self.recent_results.appendleft(
-                "Distance eval v8 (feet): {:.2f} :: Path eval (degrees): {:.2f}".format(
-                    estimated_distance,
-                    estimated_direction
-                    #eval_utils.evaluate_distance_v7(self.tracked_frame_buffer,
-                    #                                self.camera_params),
-                    #eval_utils.evaluate_path(self.cb,
-                    #                         pixel_path,
-                    #                         self.camera_params)
-                )
-            )
-
-            print("Distance eval v7 (feet): {:.2f}".format(
-                eval_utils.evaluate_distance_v8(self.tracked_frame_buffer,
-                                                self.camera_params)
-            ))
-            """
-            print("Distance eval v2 (feet): {:.2f}".format(
-                eval_utils.evaluate_distance_v2(self.tracked_frame_buffer,
-                                                self.camera_params)
-            ))
-            print("Distance eval v3 (feet): {:.2f}".format(
-                eval_utils.evaluate_distance_v3(self.tracked_frame_buffer,
-                                                self.camera_params)
-            ))
-            print("Distance eval v4 (feet): {:.2f}".format(
-                eval_utils.evaluate_distance_v4(self.tracked_frame_buffer,
-                                                self.camera_params)
-            ))
-            print("Distance eval v5 (feet): {:.2f}".format(
-                eval_utils.evaluate_distance_v5(self.tracked_frame_buffer,
-                                                self.camera_params)
-            ))
-            print("Distance eval v6 (feet): {:.2f}".format(
-                eval_utils.evaluate_distance_v6(self.tracked_frame_buffer,
-                                                self.camera_params)
-            ))
-            print("Distance eval v7 (feet): {:.2f}".format(
-                eval_utils.evaluate_distance_v7(self.tracked_frame_buffer,
-                                                self.camera_params)
-            ))
-            """
-
-
-        if t - self.tracking_start_time >= 3.0:
-            # There's no good reason to track for this amount of time.
-            # Reset to the beginning state.
-            self.reset()
-
-    def track_object_v2(self, frame, t):
-        corners = []
-        for c in self.surface_roi:
-            cp = camera_utils.map_world_to_camera_coords(np.array(c, np.float32),
-                                                              self.camera_params)
-            x, y = cp
-            corners.append((x, y))
-        image_pts_2d = np.array(corners).reshape(-1, 2).astype(np.int32)
-        x, y, w, h = cv2.boundingRect(image_pts_2d)
-        roi = frame[y:y+h, x:x+w, :]
-        diffed = chessboard_utils.diff_against_median(
-            roi,
-            self.median_channels
-        )
-        max_val = np.max(diffed)
-        if max_val > 1e-6:
-            normalized_diff = (diffed / max_val) * 255.0
-        else:
-            normalized_diff = diffed
-        vis_img = normalized_diff.astype(np.uint8)
+        #max_val = np.max(diffed)
+        #if max_val > 1e-6:
+        #    normalized_diff = (diffed / max_val) * 255.0
+        #else:
+        #    normalized_diff = diffed
+        #vis_img = normalized_diff.astype(np.uint8)
         #cv2.imshow("diffed", vis_img)
         cX, cY = chessboard_utils.find_golfball(diffed, self.background_mass)
         if all((cX, cY)):
-            self.tracked_frame_buffer.append((frame.copy(), t, (x+cX, y+cY)))
+            self.tracked_frame_buffer.append((frame.copy(), t, (roi_x+cX, roi_y+cY)))
         else:
             self.tracked_frame_buffer.append((frame.copy(), t, (None, None)))
 
@@ -394,8 +259,8 @@ class Tracker:
             self.show_result_start_time = t
 
             pixel_path = get_pixel_path(self.tracked_frame_buffer)
-            estimated_distance = eval_utils.evaluate_distance_v8(self.tracked_frame_buffer,
-                                                                 self.camera_params)
+            estimated_distance = eval_utils.evaluate_distance(self.tracked_frame_buffer,
+                                                              self.camera_params)
             self.voice_assistant.speak("Distance eval: {:.2f} feet".format(estimated_distance))
             def middle_line(l1, l2):
                 a1, b1, d1 = l1
@@ -405,27 +270,26 @@ class Tracker:
                 bm = (b1 + b2) / 2.0
                 dm = (d1 + d2) / 2.0
                 return am, bm, dm
-            estimated_direction, direction_result = eval_utils.evaluate_path_v2(
+            estimated_direction, direction_result = eval_utils.evaluate_path(
                 middle_line(self.surface_lines[0], self.surface_lines[1]),
                 pixel_path,
                 self.camera_params)
             if estimated_direction < 1.0:
-                self.voice_assistant.speak("Path eval: {:.2f} degrees".format(estimated_direction))
+                self.voice_assistant.speak(
+                    "Path eval: {:.2f} degrees".format(estimated_direction)
+                )
             else:
-                self.voice_assistant.speak("Path eval: {}, {:.2f} degrees".format(direction_result,
-                                                                      estimated_direction))
+                self.voice_assistant.speak(
+                    "Path eval: {}, {:.2f} degrees".format(direction_result,
+                                                           estimated_direction)
+                )
             
             self.recent_results.appendleft(
-                "Distance eval v8 (feet): {:.2f} :: Path eval (degrees): {:.2f}".format(
+                "Distance eval (feet): {:.2f} :: Path eval (degrees): {:.2f}".format(
                     estimated_distance,
                     estimated_direction
                 )
             )
-
-            print("Distance eval v8 (feet): {:.2f}".format(
-                eval_utils.evaluate_distance_v8(self.tracked_frame_buffer,
-                                                self.camera_params)
-            ))
 
         if t - self.tracking_start_time >= 3.0:
             # There's no good reason to track for this amount of time.
@@ -452,13 +316,8 @@ class Tracker:
             case TrackingState.FINDING_OBJECTS:
                 self.find_objects(frame, t)
                 return
-            case TrackingState.FINDING_OBJECTS_V2:
-                self.find_objects_v2(frame, t)
             case TrackingState.TRACKING_OBJECT:
                 self.track_object(frame, t)
-                return
-            case TrackingState.TRACKING_OBJECT_V2:
-                self.track_object_v2(frame, t)
                 return
             case TrackingState.SHOWING_RESULT:
                 self.show_result(frame, t)
@@ -530,9 +389,9 @@ class Tracker:
         # Draw detected chessboard onto the frame.
         if self.cb is not None:
             frame = cv2.drawChessboardCorners(frame, params.CHESSBOARD_TILES, self.cb, patternWasFound=True)
-            camera_utils.draw_world_grid_overlay_v1(frame,
-                                                    self.camera_params,
-                                                    params.CHESSBOARD_TILE_LENGTH)
+            camera_utils.draw_world_grid_overlay(frame,
+                                                 self.camera_params,
+                                                 params.CHESSBOARD_TILE_LENGTH)
 
         # Draw putting surface edges
         if self.surface_lines is not None:
@@ -545,9 +404,7 @@ class Tracker:
                 dm = (d1 + d2) / 2.0
                 return am, bm, dm
                 
-            #print("line 0:", self.surface_lines[0], len(self.surface_lines[0]))
             self.draw_world_line(frame, self.surface_lines[0], 2000)
-            #print("line 1:", self.surface_lines[1])
             self.draw_world_line(frame, self.surface_lines[1], 2000)
             self.draw_world_line(
                 frame, 
@@ -575,18 +432,11 @@ class Tracker:
 
         if self.state == TrackingState.SHOWING_RESULT:
             pixel_path = get_pixel_path(self.tracked_frame_buffer)
-            #pixel_path = np.array([x for x in self.tracked_object_buffer if all(x)],
-            #                      np.float32)
                      
             # Drawing the fitted line onto the frame.
             vx, vy, vz, x0, y0, z0 = camera_utils.fit_tracked_path(pixel_path,
                                                                    self.camera_params)
-            # TODO: are cbrows and cbcols correct here?
-            #cb_world_box = (0,
-            #                0,
-            #                int(params.CHESSBOARD_TILE_LENGTH*cbrows),
-            #                int(params.CHESSBOARD_TILE_LENGTH*cbcols))
-            s = 20*params.CHESSBOARD_TILE_LENGTH # TODO: hard coded value needs to be from params.
+            s = 20*params.CHESSBOARD_TILE_LENGTH 
             p1 = (int(x0[0] + s*vx[0]), int(y0[0] + s*vy[0]))
             p2 = (int(x0[0] - s*vx[0]), int(y0[0] - s*vy[0]))
 

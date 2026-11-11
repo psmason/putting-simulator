@@ -70,7 +70,7 @@ def test_calibration_geometry(cb, camera_params):
         return False
     return True
 
-def draw_world_grid_overlay_v1(
+def draw_world_grid_overlay(
     img,
     camera_params,
     grid_spacing_mm=100.0,
@@ -105,120 +105,7 @@ def draw_world_grid_overlay_v1(
             if 0 <= pt_int[0] < width and 0 <= pt_int[1] < height:
                 cv2.circle(img, pt_int, 5, (0, 0, 255), -1)
 
-def draw_world_grid_overlay(
-    img,
-    camera_params,
-    grid_spacing_mm=100.0,
-):
-    """Draws discrete points along a single chessboard axis 
-    starting from the origin using an iterative loop.
-    """
-    height, width = img.shape[:2]
-    
-    # Iterate for 10 intervals along the X-axis starting from origin (0, 0, 0)
-    for i in range(40):
-        # Construct a single 3D point (X increases, Y=0, Z=0)
-        world_pt = np.array([i * grid_spacing_mm, 0.0, 0.0], dtype=np.float32)
-        
-        # Project single point
-        px_pt = map_world_to_camera_coords(world_pt, camera_params)
-        
-        if px_pt is not None:
-            pt_int = (int(px_pt[0]), int(px_pt[1]))
-            
-            # Draw point if within image bounds
-            if 0 <= pt_int[0] < width and 0 <= pt_int[1] < height:
-                cv2.circle(img, pt_int, 5, (0, 0, 255), -1)
-
-                world_pt = np.array([i * grid_spacing_mm, 0.0, 0.0], dtype=np.float32)
-        
-        # Project single point
-        world_pt = np.array([0.0, i * grid_spacing_mm, 0.0], dtype=np.float32)
-        py_pt = map_world_to_camera_coords(world_pt, camera_params)
-        
-        if py_pt is not None:
-            pt_int = (int(py_pt[0]), int(py_pt[1]))
-            
-            # Draw point if within image bounds
-            if 0 <= pt_int[0] < width and 0 <= pt_int[1] < height:
-                cv2.circle(img, pt_int, 5, (0, 0, 255), -1)
-
 def fit_neoprene_mask_ransac(
-    cleaned_mask,
-    camera_params,
-    neoprene_width_mm,
-    max_iterations=8000,
-    z_plane=0.0,
-):
-  """Fits strictly parallel borders by maximizing mask occupancy (area overlap)
-
-  rather than fitting sparse Canny edge points.
-  """
-  # 1. Get all foreground pixel coordinates from the binary mask
-  # Note: argwhere returns [y, x]. Convert to world coordinates.
-  y_indices, x_indices = np.nonzero(cleaned_mask)
-  if len(x_indices) < 100:
-    return None, None, None
-
-  # Subsample mask points if the array is too dense to keep RANSAC fast
-  if len(x_indices) > 2000:
-    indices = np.random.choice(len(x_indices), 2000, replace=False)
-    x_indices, y_indices = x_indices[indices], y_indices[indices]
-
-  image_pts = np.column_stack((x_indices, y_indices)).astype(np.float32)
-  image_pts_reshaped = image_pts.reshape(-1, 1, 2)
-
-  # Map sampled mask pixels to 3D world coordinates once
-  world_pts = map_camera_to_world_coords(
-      image_pts_reshaped, camera_params, z=z_plane
-  )
-  pts_2d = world_pts[:, :2]  # (X, Y) on the ground plane
-
-  best_score = -1
-  best_lines = None
-
-  half_width = neoprene_width_mm / 2.0
-
-  for _ in range(max_iterations):
-    # 2. Sample two random world points to define the centerline orientation
-    idx = np.random.choice(len(pts_2d), 2, replace=False)
-    p1, p2 = pts_2d[idx[0]], pts_2d[idx[1]]
-
-    v = p2 - p1
-    baseline = np.linalg.norm(v)
-    if baseline < 300.0:  # Minimum baseline check in mm
-      continue
-    v /= baseline
-    a, b = -v[1], v[0]  # Normal vector [a, b]
-
-    # Centerline offset
-    d_center = -(a * p1[0] + b * p1[1])
-
-    # The two parallel borders at exactly +W/2 and -W/2 from the centerline
-    d1 = d_center + half_width
-    d2 = d_center - half_width
-
-    # 3. Region Scoring:
-    # Calculate perpendicular distance of every mask point to the centerline
-    center_distances = a * pts_2d[:, 0] + b * pts_2d[:, 1] + d_center
-
-    # A point is inside the neoprene strip if its distance from the centerline
-    # is less than half_width.
-    inside_strip = np.abs(center_distances) <= half_width
-
-    # Score is simply the count of mask pixels correctly falling inside the predicted strip width
-    score = np.sum(inside_strip)
-
-    if score > best_score:
-      best_score = score
-      best_lines = ((a, b, d1), (a, b, d2))
-
-  if best_lines is None:
-    return None, None, None
-
-  return best_lines[0], best_lines[1], None
-
-def fit_neoprene_mask_ransac_v2(
     cleaned_mask,
     camera_params,
     neoprene_width_mm,
@@ -383,6 +270,14 @@ def get_neoprene_roi(top_line, bottom_line, roi_offset_mm):
     bl = intersect_lines(bottom_line, left_line)
 
     return tl, tr, br, bl
+
+def get_roi_rect(roi, camera_params):
+  corners = []
+  for c in roi:
+    x, y = map_world_to_camera_coords(np.array(c, np.float32), camera_params)
+    corners.append((x, y))
+  image_pts_2d = np.array(corners).reshape(-1, 2).astype(np.int32)
+  return cv2.boundingRect(image_pts_2d)
 
 def get_camera_pose(rvecs, tvecs):
     """Computes the rotation matrix R and camera origin C in world coordinates."""
