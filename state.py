@@ -10,6 +10,7 @@ import camera_utils
 import chessboard_utils
 import eval_utils
 import golf_utils
+import tracking_utils
 import tts_utils
 import params
 
@@ -82,9 +83,6 @@ class Tracker:
         # Chessboard positions produced by the CHESSBOARD_FOUND state
         self.cb = None
 
-        # Buffer is filled when initializing chessboard for object detection
-        self.cb_buffer = []
-
         # Median pixel values taken from the chessboard buffer
         self.median_channels = {}
 
@@ -114,7 +112,6 @@ class Tracker:
     def reset(self):
         self.state = TrackingState.FINDING_CHESSBOARD
         self.cb = None
-        self.cb_buffer.clear()
         self.median_channels = {}
         self.background_mass = None
         self.camera_params = {}
@@ -135,25 +132,6 @@ class Tracker:
         self.cb = cb
         self.camera_params = camera_utils.calibrate_camera(gray, cb)
         self.state = TrackingState.CHESSBOARD_FOUND
-
-    def initialize_chessboard(self, frame, t):
-        cb_frame = chessboard_utils.get_chessboard_subimage(frame, self.cb)
-        self.cb_buffer.append(
-            chessboard_utils.get_chessboard_subimage(frame, self.cb)
-        )
-
-        if len(self.cb_buffer) == 10:
-            ml, ma, mb = chessboard_utils.get_median_pixels(self.cb_buffer)
-            self.median_channels["ml"] = ml
-            self.median_channels["ma"] = ma
-            self.median_channels["mb"] = mb
-            self.background_mass = chessboard_utils.get_background_diff(self.cb_buffer,
-                                                                        self.median_channels)
-            print("background mass", np.log(self.background_mass))
-
-            self.cb_buffer.clear()
-            self.search_start_time = t
-            self.state = TrackingState.FINDING_SURFACE
 
     def find_surface(self, frame, t):
         lower_dark_blue = np.array([100, 50, 20])
@@ -185,15 +163,14 @@ class Tracker:
         self.roi_buffer.append(roi_subframe)
 
         if len(self.roi_buffer) == 10:
-            ml, ma, mb = chessboard_utils.get_median_pixels(self.roi_buffer)
+            ml, ma, mb = tracking_utils.get_median_pixels(self.roi_buffer)
             self.median_channels["ml"] = ml
             self.median_channels["ma"] = ma
             self.median_channels["mb"] = mb
-            self.background_mass = chessboard_utils.get_background_diff(self.roi_buffer,
-                                                                        self.median_channels)
+            self.background_mass = tracking_utils.get_background_diff(self.roi_buffer,
+                                                                      self.median_channels)
             print("background mass", np.log(self.background_mass))
 
-            self.roi_buffer.clear()
             self.search_start_time = t
             self.state = TrackingState.FINDING_OBJECTS
 
@@ -201,7 +178,7 @@ class Tracker:
         roi_x, roi_y, roi_w, roi_h = camera_utils.get_roi_rect(self.surface_roi,
                                                                self.camera_params)
         roi_subframe = frame[roi_y:roi_y+roi_h, roi_x:roi_x+roi_w, :]
-        diffed = chessboard_utils.diff_against_median(
+        diffed = tracking_utils.diff_against_median(
             roi_subframe,
             self.median_channels
         )
@@ -213,7 +190,7 @@ class Tracker:
         #vis_img = normalized_diff.astype(np.uint8)
         #cv2.imshow("diffed", vis_img)
         
-        cX, cY = chessboard_utils.find_golfball(diffed, self.background_mass)
+        cX, cY = tracking_utils.find_golfball(diffed, self.background_mass)
         if all((cX, cY)):
             self.tracked_frame_buffer.append((frame.copy(), t, (roi_x+cX, roi_y+cY)))
         else:
@@ -231,7 +208,7 @@ class Tracker:
         roi_x, roi_y, roi_w, roi_h = camera_utils.get_roi_rect(self.surface_roi,
                                                                self.camera_params)
         roi_subframe = frame[roi_y:roi_y+roi_h, roi_x:roi_x+roi_w, :]
-        diffed = chessboard_utils.diff_against_median(
+        diffed = tracking_utils.diff_against_median(
             roi_subframe,
             self.median_channels
         )
@@ -242,7 +219,7 @@ class Tracker:
         #    normalized_diff = diffed
         #vis_img = normalized_diff.astype(np.uint8)
         #cv2.imshow("diffed", vis_img)
-        cX, cY = chessboard_utils.find_golfball(diffed, self.background_mass)
+        cX, cY = tracking_utils.find_golfball(diffed, self.background_mass)
         if all((cX, cY)):
             self.tracked_frame_buffer.append((frame.copy(), t, (roi_x+cX, roi_y+cY)))
         else:
@@ -308,7 +285,6 @@ class Tracker:
                 self.find_chessboard(frame)
                 return
             case TrackingState.CHESSBOARD_FOUND:
-                #self.initialize_chessboard(frame, t)
                 self.find_surface(frame, t)
                 return
             case TrackingState.INIT_ROI:
