@@ -20,17 +20,6 @@ class PathResult(Enum):
     PULLED = 1
     PUSHED = 2
 
-def score_direction(pv, cbv1, cbv2):
-    # The chessboard might be oriented in four directions, in two pairs perpendicular
-    # to each other, and two pairs opposite each other.
-    # As a result, when scoring the detected path, we need do the scoring
-    # in the two potential orientations, and take the average score.
-    d1 = np.rad2deg(np.arccos(np.dot(pv, cbv1))) % 90.0
-    d1 = min(90 - d1, d1)
-    d2 = np.rad2deg(np.arccos(np.dot(pv, cbv2))) % 90.0
-    d2 = min(90 - d2, d2)
-    return np.mean([d1, d2])
-
 def evaluate_path(target_line, pixel_path, camera_params):
     vx, vy, vz, x0, y0, z0 = camera_utils.fit_tracked_path(pixel_path,
                                                            camera_params)
@@ -147,3 +136,45 @@ def evaluate_distance(tracking_buffer, camera_params, residual_threshold=0.05, m
     # 3. Compute final speed and convert via existing utility
     speed_world = np.sqrt(best_vx**2 + best_vy**2)
     return golf_utils.velocity_to_distance(speed_world)
+
+def is_linear_trajectory(tracking_buffer, ratio_threshold=0.75, dist_thresh=10.0, max_iterations=50):
+    points = get_pixel_path(tracking_buffer)
+    n_points = len(points)
+    
+    # Insufficient points to evaluate a trajectory trend, so default to "yes"
+    if n_points < 3:
+        return True
+
+    best_inliers_count = 0
+    
+    for _ in range(max_iterations):
+        idx = np.random.choice(n_points, 2, replace=False)
+        p1, p2 = points[idx[0]], points[idx[1]]
+        
+        if np.allclose(p1, p2):
+            # ignore similar poits
+            continue
+            
+        # Line equation in general form: Ax + By + C = 0
+        x1, y1 = p1
+        x2, y2 = p2
+        A = y2 - y1
+        B = x1 - x2
+        C = x2 * y1 - x1 * y2
+        
+        denom = np.sqrt(A**2 + B**2)
+        if denom == 0:
+            continue
+            
+        # Compute perpendicular distance from all points to the candidate line
+        distances = np.abs(A * points[:, 0] + B * points[:, 1] + C) / denom
+        
+        inliers_count = np.sum(distances < dist_thresh)
+        if inliers_count > best_inliers_count:
+            best_inliers_count = inliers_count
+            
+        if best_inliers_count / n_points >= ratio_threshold:
+            return True
+
+    inlier_ratio = best_inliers_count / n_points
+    return inlier_ratio >= ratio_threshold
