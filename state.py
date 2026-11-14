@@ -215,23 +215,23 @@ class Tracker:
             pixel_path = eval_utils.get_pixel_path(self.tracked_frame_buffer)
             estimated_distance = eval_utils.evaluate_distance(self.tracked_frame_buffer,
                                                               self.camera_params)
-            self.voice_assistant.speak("Distance eval: {:.2f} feet".format(estimated_distance))
+            self.voice_assistant.speak("Distance eval: {:.1f} feet".format(estimated_distance))
             estimated_direction, direction_result = eval_utils.evaluate_path(
                 geometry_utils.middle_line(self.surface_lines[0], self.surface_lines[1]),
                 pixel_path,
                 self.camera_params)
             if estimated_direction < 1.0:
                 self.voice_assistant.speak(
-                    "Path eval: {:.2f} degrees".format(estimated_direction)
+                    "Path eval: {:.1f} degrees".format(estimated_direction)
                 )
             else:
                 self.voice_assistant.speak(
-                    "Path eval: {}, {:.2f} degrees".format(direction_result,
+                    "Path eval: {}, {:.1f} degrees".format(direction_result,
                                                            estimated_direction)
                 )
             
             self.recent_results.appendleft(
-                "Distance eval (feet): {:.2f} :: Path eval (degrees): {:.2f}".format(
+                "Distance eval (feet): {:.1f} :: Path eval (degrees): {:.1f}".format(
                     estimated_distance,
                     estimated_direction
                 )
