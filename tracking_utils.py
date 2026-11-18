@@ -1,6 +1,8 @@
 import cv2
 import numpy as np
 
+from enum import Enum
+
 def get_median_pixels(frames):
   blurred_l, blurred_a, blurred_b = [], [], []
 
@@ -70,3 +72,44 @@ def find_golfball(diffed_frame, background_mass):
   cX = int(M["m10"] / M["m00"])
   cY = int(M["m01"] / M["m00"])
   return cX, cY
+
+class GolfBallTrackerState(Enum):
+  NOT_READY = 0
+  READY = 1
+
+class GolfBallTracker:
+  def __init__(self):
+    self.roi_buffer = []
+    self.median_channels = {}
+    # Background moment m00. A significant change in m00 signals a golf ball in the
+    # region of interest.
+    self.background_mass = None
+
+  def init(self, roi):
+    #cv2.imshow("sub-image", roi)
+    
+    self.roi_buffer.append(roi)
+    if len(self.roi_buffer) == 10:
+      ml, ma, mb = get_median_pixels(self.roi_buffer)
+      self.median_channels["ml"] = ml
+      self.median_channels["ma"] = ma
+      self.median_channels["mb"] = mb
+      self.background_mass = get_background_diff(self.roi_buffer,
+                                                 self.median_channels)
+      print("background mass", np.log(self.background_mass))
+      return GolfBallTrackerState.READY
+    return GolfBallTrackerState.NOT_READY
+
+  def find_golfball(self, roi):
+    diffed = diff_against_median(roi, self.median_channels)
+    #max_val = np.max(diffed)
+    #if max_val > 1e-6:
+    #    normalized_diff = (diffed / max_val) * 255.0
+    #else:
+    #    normalized_diff = diffed
+    #vis_img = normalized_diff.astype(np.uint8)
+    #cv2.imshow("diffed", vis_img)
+    return find_golfball(diffed, self.background_mass)
+
+  
+    

@@ -2,6 +2,12 @@ import json
 import numpy as np
 from enum import Enum
 
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from datetime import datetime
+import os
+
 from scipy.optimize import curve_fit
 from sklearn.linear_model import LinearRegression, RANSACRegressor
 
@@ -178,3 +184,88 @@ def is_linear_trajectory(tracking_buffer, ratio_threshold=0.75, dist_thresh=10.0
 
     inlier_ratio = best_inliers_count / n_points
     return inlier_ratio >= ratio_threshold
+
+def visualize_trajectory(tracking_buffer, camera_params, output_dir="."):
+    """ Intended to help visualize whether it's worth it to model acceleration and velocity.
+    So far, even with slow puts, there's not much of a visual curvature when plotting
+    position against time."""
+    pixel_points = []
+    timestamp_path = []
+    for _, t, p in tracking_buffer:
+        if all(p):
+            pixel_points.append(p)
+            timestamp_path.append(t)
+            
+    if len(pixel_points) < 3:
+        print("Insufficient points for visualization.")
+        return None
+
+    pixel_path = np.array(pixel_points, dtype=np.float32)
+    t = np.array(timestamp_path, dtype=np.float64)
+    t -= t[0]  # Relative time starting at 0
+
+    golfball_height = camera_utils.golfball_perceived_center()
+    path_world_coords = camera_utils.map_camera_to_world_coords(pixel_path, camera_params, golfball_height).astype(np.double)
+    
+    x = path_world_coords[:, 0]
+    y = path_world_coords[:, 1]
+
+    # Fit quadratic and linear models for time-series components
+    poly_x_quad = np.polyfit(t, x, 2)
+    poly_x_lin  = np.polyfit(t, x, 1)
+    
+    poly_y_quad = np.polyfit(t, y, 2)
+    poly_y_lin  = np.polyfit(t, y, 1)
+
+    # Extract velocities and accelerations
+    v_x_quad, a_x = poly_x_quad[1], 2 * poly_x_quad[0]
+    v_x_lin = poly_x_lin[0]
+
+    v_y_quad, a_y = poly_y_quad[1], 2 * poly_y_quad[0]
+    v_y_lin = poly_y_lin[0]
+    
+    t_dense = np.linspace(t.min(), t.max(), 200)
+    x_quad = np.polyval(poly_x_quad, t_dense)
+    x_lin  = np.polyval(poly_x_lin, t_dense)
+    
+    y_quad = np.polyval(poly_y_quad, t_dense)
+    y_lin  = np.polyval(poly_y_lin, t_dense)
+
+    # 2. Create 2-Panel Figure
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+    # X vs Time Subplot
+    ax1.scatter(t, x, color='black', label='Observed X Data', zorder=3)
+    ax1.plot(t_dense, x_quad, color='red', linewidth=2, 
+             label=f'Non-Linear (v₀ = {v_x_quad:.2f} mm/s, a = {a_x:.2f} mm/s²)')
+    ax1.plot(t_dense, x_lin, color='blue', linestyle='--', linewidth=1.5, 
+             label=f'Linear Model (v = {v_x_lin:.2f} mm/s)')
+    
+    ax1.set_title('X Coordinate vs. Time')
+    ax1.set_xlabel('Time (seconds)')
+    ax1.set_ylabel('World X Position (mm)')
+    ax1.grid(True, linestyle=':', alpha=0.6)
+    ax1.legend(loc='best')
+
+    # Y vs Time Subplot
+    ax2.scatter(t, y, color='black', label='Observed Y Data', zorder=3)
+    ax2.plot(t_dense, y_quad, color='red', linewidth=2, 
+             label=f'Non-Linear (v₀ = {v_y_quad:.2f} mm/s, a = {a_y:.2f} mm/s²)')
+    ax2.plot(t_dense, y_lin, color='blue', linestyle='--', linewidth=1.5, 
+             label=f'Linear Model (v = {v_y_lin:.2f} mm/s)')
+    
+    ax2.set_title('Y Coordinate vs. Time')
+    ax2.set_xlabel('Time (seconds)')
+    ax2.set_ylabel('World Y Position (mm)')
+    ax2.grid(True, linestyle=':', alpha=0.6)
+    ax2.legend(loc='best')
+    plt.tight_layout()
+
+    # Save to disk with datetime stamp
+    timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = os.path.join(output_dir, f"trajectory_spatial_panels_{timestamp_str}.png")
+    plt.savefig(filename, dpi=300)
+    plt.close("all")
+    
+    print(f"3-panel diagnostic plot saved to: {filename}")
+    return filename

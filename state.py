@@ -86,6 +86,8 @@ class Tracker:
         self.surface_roi = None
         self.roi_buffer = []
 
+        self.golf_ball_tracker = None
+
     def reset(self):
         self.state = TrackingState.FINDING_CHESSBOARD
         self.cb = None
@@ -99,6 +101,7 @@ class Tracker:
         self.surface_lines = None
         self.surface_roi = None
         self.roi_buffer.clear()
+        self.golf_ball_tracker = None
         
     def find_chessboard(self, frame):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -136,38 +139,17 @@ class Tracker:
         roi_x, roi_y, roi_w, roi_h = camera_utils.get_roi_rect(self.surface_roi,
                                                                self.camera_params)
         roi_subframe = frame[roi_y:roi_y+roi_h, roi_x:roi_x+roi_w, :]
-        #cv2.imshow("sub-image", roi_subframe)
-        self.roi_buffer.append(roi_subframe)
 
-        if len(self.roi_buffer) == 10:
-            ml, ma, mb = tracking_utils.get_median_pixels(self.roi_buffer)
-            self.median_channels["ml"] = ml
-            self.median_channels["ma"] = ma
-            self.median_channels["mb"] = mb
-            self.background_mass = tracking_utils.get_background_diff(self.roi_buffer,
-                                                                      self.median_channels)
-            print("background mass", np.log(self.background_mass))
-
+        self.golf_ball_tracker = tracking_utils.GolfBallTracker()
+        if self.golf_ball_tracker.init(roi_subframe) == tracking_utils.GolfBallTrackerState.READY:
             self.search_start_time = t
             self.state = TrackingState.FINDING_OBJECTS
 
     def find_objects(self, frame, t):
         roi_x, roi_y, roi_w, roi_h = camera_utils.get_roi_rect(self.surface_roi,
                                                                self.camera_params)
-        roi_subframe = frame[roi_y:roi_y+roi_h, roi_x:roi_x+roi_w, :]
-        diffed = tracking_utils.diff_against_median(
-            roi_subframe,
-            self.median_channels
-        )
-        #max_val = np.max(diffed)
-        #if max_val > 1e-6:
-        #    normalized_diff = (diffed / max_val) * 255.0
-        #else:
-        #    normalized_diff = diffed
-        #vis_img = normalized_diff.astype(np.uint8)
-        #cv2.imshow("diffed", vis_img)
-        
-        cX, cY = tracking_utils.find_golfball(diffed, self.background_mass)
+        roi_subframe = frame[roi_y:roi_y+roi_h, roi_x:roi_x+roi_w, :]        
+        cX, cY = self.golf_ball_tracker.find_golfball(roi_subframe)
         if all((cX, cY)):
             self.tracked_frame_buffer.append((frame.copy(), t, (roi_x+cX, roi_y+cY)))
         else:
@@ -185,18 +167,7 @@ class Tracker:
         roi_x, roi_y, roi_w, roi_h = camera_utils.get_roi_rect(self.surface_roi,
                                                                self.camera_params)
         roi_subframe = frame[roi_y:roi_y+roi_h, roi_x:roi_x+roi_w, :]
-        diffed = tracking_utils.diff_against_median(
-            roi_subframe,
-            self.median_channels
-        )
-        #max_val = np.max(diffed)
-        #if max_val > 1e-6:
-        #    normalized_diff = (diffed / max_val) * 255.0
-        #else:
-        #    normalized_diff = diffed
-        #vis_img = normalized_diff.astype(np.uint8)
-        #cv2.imshow("diffed", vis_img)
-        cX, cY = tracking_utils.find_golfball(diffed, self.background_mass)
+        cX, cY = self.golf_ball_tracker.find_golfball(roi_subframe)
         if all((cX, cY)):
             self.tracked_frame_buffer.append((frame.copy(), t, (roi_x+cX, roi_y+cY)))
         else:
@@ -207,6 +178,8 @@ class Tracker:
                 # Noise unrelated to a golf ball (like a person walking in frame).
                 self.reset()
                 return
+
+            eval_utils.visualize_trajectory(self.tracked_frame_buffer, self.camera_params)
                 
             
             self.state = TrackingState.SHOWING_RESULT
